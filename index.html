@@ -994,6 +994,7 @@ function frame(){
 function advance(){
   const prev = notes[idx]; idx++; clearChord();
   document.querySelectorAll('.wk.lit').forEach(e=>e.classList.remove('lit'));
+  if (MIC.latch!=null && (idx>=N || !notes[idx].parts.some(pt => ((pt.m-MIC.latch)%12+12)%12===0))) MIC.latch = null;
   if (idx >= N){ finishStep(); return; }
   if (notes[idx].ph !== prev.ph){ phraseDone[prev.ph] = true; updateChips(notes[idx].ph); sparkle(); if (MIC.state!=='on') chime([79,84],.12,.28); }   // with the mic on he keeps playing: a chime would deafen it
   pos = notes[idx].start;
@@ -1098,7 +1099,7 @@ function press(m, src, tOn){
     const pn = clkPos(running.C, running.perf ? performance.now()/1000 : audioNow());
     const nx = notes[idx+1];
     if (mic && partOf(m,notes[idx],src)) return;   // the mic re-heard the note he is holding: not a mistake
-    if (nx && partOf(m,nx,src) && pn >= running.pEnd - 0.35){ running=null; stopVoices(); advance(); if (idx>=N) return; }
+    if (nx && partOf(m,nx,src) && pn >= running.pEnd - 1){ running=null; stopVoices(); advance(); if (idx>=N) return; }
     else if (notes[idx].chord && partOf(m,notes[idx],src)) return;   // re-pressing a key of the chord he is holding: harmless
     else { play(m, ctx.currentTime, .4, .18); waitShake(); return; }
   }
@@ -1117,7 +1118,7 @@ function press(m, src, tOn){
 
 /* ================= microphone: hear the real piano ================= */
 // levels: [rms gate, YIN threshold, attack rise ratio]. Higher sensitivity = quieter notes count.
-const SENS = [{gate:0.02, thr:0.12, rise:2.0}, {gate:0.008, thr:0.15, rise:1.65}, {gate:0.0035, thr:0.2, rise:1.4}];
+const SENS = [{gate:0.01, thr:0.15, rise:1.5}, {gate:0.0035, thr:0.18, rise:1.25}, {gate:0.0012, thr:0.22, rise:1.15}];
 let micSens = 1; try { const v = parseInt(localStorage.getItem('rtr_sens'),10); if (v>=0 && v<=2) micSens = v; } catch(e){}
 let micPref = false; try { micPref = localStorage.getItem('rtr_mic')==='1'; } catch(e){}
 const MIC_MSG = {
@@ -1126,7 +1127,7 @@ const MIC_MSG = {
   denied:'麦克风被拒绝了：请在浏览器/系统设置里允许麦克风，再点一次 🎤',
   nodev:'没有找到麦克风', busy:'麦克风正被别的应用占用，关掉它再点一次',
   error:'麦克风打不开，请再点一次试试'};
-const MIC_LO = 53, MIC_HI = 67, MIC_K = 3;     // on-screen keyboard range; frames a pitch must hold
+const MIC_LO = 53, MIC_HI = 67, MIC_K = 2;     // on-screen keyboard range; frames a pitch must hold
 function setMicState(st){
   MIC.state = st;
   const b = $('bMic'), h = $('hear'), err = !!MIC_MSG[st];
@@ -1197,10 +1198,10 @@ function expectN(){
 }
 function expectNote(){ const n = expectN(); return n ? n.m : null; }
 const expectMs = () => { const n = expectN(); return n ? n.parts.map(p => p.m) : []; };
-// Hz -> keyboard key: nearest semitone within ±40 cents; octave errors folded, preferring the expected note's octave
+// Hz -> keyboard key: nearest semitone within ±50 cents; octave errors folded, preferring the expected note's octave
 function toKey(f){
   const mf = 69 + 12*Math.log2(f/440), r = Math.round(mf), cents = (mf - r)*100;
-  if (Math.abs(cents) > 40) return null;
+  if (Math.abs(cents) > 50) return null;
   for (const ex of expectMs()) if ((((r-ex)%12)+12)%12===0 && Math.abs(r-ex)<=24) return {m:ex, cents};
   let best = null;
   for (let k=-36; k<=36; k+=12){ const c = r + k; if (c>=MIC_LO && c<=MIC_HI && (best==null || Math.abs(c-60) < Math.abs(best-60))) best = c; }
@@ -1251,7 +1252,7 @@ function micFrame(){
   if (MIC.blank){
     MIC.blank = false;
     if (rms > S.gate && rms > S.rise*Math.max(MIC.preBlank, S.gate*0.3)){ onset = true; tOn = MIC.blankT - lat; }
-  } else if (rms > S.gate && rms > S.rise*Math.max(minOf(MIC.hist, 4), S.gate*0.3) && now - MIC.lastOn > 0.08){
+  } else if (rms > S.gate && rms > S.rise*Math.max(minOf(MIC.hist, 8), S.gate*0.3) && now - MIC.lastOn > 0.08){
     onset = true;
   }
   MIC.hist.push(rms); if (MIC.hist.length > 8) MIC.hist.shift();
@@ -1279,9 +1280,15 @@ function micFrame(){
     else if (age > 0.5){ MIC.pend = null; MIC.crun = 0; }
   } else if (MIC.pend){
     if (stable!=null){ micEmit(stable, MIC.pend.t, key.cents); MIC.pend = null; }
-    else if (now - MIC.pend.since > 0.45) MIC.pend = null;
-  } else if (!chordExp && stable!=null && MIC.latch!=null && stable!==MIC.latch){
-    const l5 = R.slice(-5); if (l5.length===5 && l5.every(v=>v===stable)) micEmit(stable, tOn - 0.06, key.cents);   // legato change
+    else if (now - MIC.pend.since > 0.7) MIC.pend = null;
+  } else if (stable!=null && stable!==MIC.latch){
+    // no fresh attack: still count if the pitch he is supposed to play has settled,
+    // or (legato) if a different pitch has been stable for a bit. same pitch as latch
+    // stays locked so a ringing note cannot walk itself forward.
+    const expected = expectMs().some(ex => (((stable-ex)%12)+12)%12===0);
+    const need = expected ? MIC_K : 5;
+    const held = R.slice(-need);
+    if (held.length===need && held.every(v=>v===stable)) micEmit(stable, now - 0.06, key.cents);
   }
   if (rms < S.gate*0.5){ if (++MIC.quiet >= 3) MIC.latch = null; } else MIC.quiet = 0;
   showHeard(km!=null ? (Array.isArray(MIC.heard) && rms > S.gate*0.6 && MIC.heard.includes(km) ? MIC.heard : km) : (rms > S.gate*0.6 ? MIC.heard : null), rms);
