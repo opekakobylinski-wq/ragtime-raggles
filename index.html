@@ -1153,7 +1153,9 @@ async function micOn(){
     if (MIC.state!=='wait'){ stream.getTracks().forEach(t=>t.stop()); return; }   // turned off while asking
     if (ctx.state!=='running') try { await ctx.resume(); } catch(e){}
     const src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser(), sink = ctx.createGain();
-    an.fftSize = 4096;   // last 2048 samples feed YIN; the whole window feeds the chord check an.smoothingTimeConstant = 0; sink.gain.value = 0;
+    an.fftSize = 4096;   // last 2048 samples feed YIN; the whole window feeds the chord check
+    an.smoothingTimeConstant = 0;
+    sink.gain.value = 0;   // mute before connect: Safari needs this tap, but it must not play the mic
     src.connect(an); an.connect(sink); sink.connect(ctx.destination);   // Safari only runs analysers that reach the output (silent)
     Object.assign(MIC, {stream, src, an, sink, buf:new Float32Array(an.fftSize), hist:[], run:[], pend:null, latch:null,
                         quiet:0, blank:false, heard:null, lastOn:-1, tStart:audioNow()});
